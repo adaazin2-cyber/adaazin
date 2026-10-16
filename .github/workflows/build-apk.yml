@@ -10,12 +10,12 @@ on:
         default: flutter
         type: string
       zip_url:
-        description: URL ZIP project Flutter (release asset)
+        description: (tidak dipakai, diabaikan)
         required: false
         default: ""
         type: string
       tag:
-        description: Tag release
+        description: Tag release tempat ZIP diupload bot
         required: true
         type: string
       build_type:
@@ -49,7 +49,7 @@ jobs:
     timeout-minutes: 40
     env:
       MODE: ${{ inputs.mode }}
-      ZIP_URL: ${{ inputs.zip_url }}
+      TAG: ${{ inputs.tag }}
       BUILD_TYPE: ${{ inputs.build_type }}
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -59,26 +59,33 @@ jobs:
             echo "Mode '$MODE' belum didukung workflow ini."
             exit 1
           fi
-          if [ -z "$ZIP_URL" ]; then echo "zip_url kosong"; exit 1; fi
+          if [ -z "$TAG" ]; then echo "tag kosong"; exit 1; fi
+          if [ "$BUILD_TYPE" != "release" ] && [ "$BUILD_TYPE" != "debug" ]; then
+            echo "build_type harus release atau debug"; exit 1
+          fi
 
-      - name: Download project
+      - name: Download project dari release
         run: |
-          curl -fL -H "Authorization: Bearer $GH_TOKEN" -o project.zip "$ZIP_URL"
+          mkdir -p download
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "*.zip" --dir download --clobber
+          ZIP=$(ls download/*.zip | head -1)
+          if [ -z "$ZIP" ]; then echo "ZIP tidak ditemukan di release $TAG"; exit 1; fi
+          unzip -q "$ZIP" -d project
 
-      - name: Extract & locate pubspec
+      - name: Locate pubspec
         run: |
-          unzip -q project.zip -d project
-          PUBSPEC=$(find project -name pubspec.yaml | head -1)
-          if [ -z "$PUBSPEC" ]; then echo "pubspec.yaml tidak ditemukan"; exit 1; fi
+          PUBSPEC=$(find project -name pubspec.yaml -not -path "*/build/*" | head -1)
+          if [ -z "$PUBSPEC" ]; then echo "pubspec.yaml tidak ditemukan di dalam ZIP"; exit 1; fi
           echo "PROJ_DIR=$(dirname "$PUBSPEC")" >> "$GITHUB_ENV"
 
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+          cache: true
 
       - name: Build APK
-        working-directory: ${{ env.PROJ_DIR }}
         run: |
+          cd "$PROJ_DIR"
           flutter pub get
           flutter build apk --$BUILD_TYPE
 
