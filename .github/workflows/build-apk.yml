@@ -1,1 +1,89 @@
+name: build-apk
+run-name: build ${{ inputs.tag }}
 
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: flutter atau web2apk
+        required: true
+        default: flutter
+        type: string
+      zip_url:
+        description: URL ZIP project Flutter (release asset)
+        required: false
+        default: ""
+        type: string
+      tag:
+        description: Tag release
+        required: true
+        type: string
+      build_type:
+        description: release atau debug
+        required: false
+        default: release
+        type: string
+      web_url:
+        description: URL website (mode web2apk)
+        required: false
+        default: ""
+        type: string
+      app_name:
+        description: Nama aplikasi (mode web2apk)
+        required: false
+        default: WebApp
+        type: string
+      icon_url:
+        description: URL icon (mode web2apk, opsional)
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      MODE: ${{ inputs.mode }}
+      ZIP_URL: ${{ inputs.zip_url }}
+      BUILD_TYPE: ${{ inputs.build_type }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Validasi input
+        run: |
+          if [ "$MODE" != "flutter" ]; then
+            echo "Mode '$MODE' belum didukung workflow ini."
+            exit 1
+          fi
+          if [ -z "$ZIP_URL" ]; then echo "zip_url kosong"; exit 1; fi
+
+      - name: Download project
+        run: |
+          curl -fL -H "Authorization: Bearer $GH_TOKEN" -o project.zip "$ZIP_URL"
+
+      - name: Extract & locate pubspec
+        run: |
+          unzip -q project.zip -d project
+          PUBSPEC=$(find project -name pubspec.yaml | head -1)
+          if [ -z "$PUBSPEC" ]; then echo "pubspec.yaml tidak ditemukan"; exit 1; fi
+          echo "PROJ_DIR=$(dirname "$PUBSPEC")" >> "$GITHUB_ENV"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Build APK
+        working-directory: ${{ env.PROJ_DIR }}
+        run: |
+          flutter pub get
+          flutter build apk --$BUILD_TYPE
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ inputs.build_type }}
+          path: ${{ env.PROJ_DIR }}/build/app/outputs/flutter-apk/*.apk
+          if-no-files-found: error
