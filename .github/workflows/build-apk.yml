@@ -112,6 +112,19 @@ jobs:
             echo "Gradle dinaikkan dari $CUR ke 8.14 (minimum Flutter)"
           fi
 
+      - name: Samakan versi AGP dengan Flutter
+        run: |
+          MIN=8.11.1
+          FILES=$(grep -rlE "com\.android\.(application|tools\.build:gradle)" "$PROJ_DIR/android" --include=*.gradle --include=*.gradle.kts 2>/dev/null || true)
+          for f in $FILES; do
+            CUR=$(grep -oE 'com\.android\.(application|tools\.build:gradle)[^0-9]*[0-9]+\.[0-9]+(\.[0-9]+)?' "$f" | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?$' | head -1)
+            [ -z "$CUR" ] && continue
+            if [ "$(printf '%s\n%s\n' "$CUR" "$MIN" | sort -V | head -1)" = "$CUR" ] && [ "$CUR" != "$MIN" ]; then
+              sed -i -E "s/(com\.android\.(application|tools\.build:gradle)[^0-9]*)$CUR/\1$MIN/" "$f"
+              echo "AGP di $f dinaikkan dari $CUR ke $MIN"
+            fi
+          done
+
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
