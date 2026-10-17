@@ -46,12 +46,15 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
     env:
       MODE: ${{ inputs.mode }}
       TAG: ${{ inputs.tag }}
       BUILD_TYPE: ${{ inputs.build_type }}
       GH_TOKEN: ${{ github.token }}
+      # Build satu arsitektur (arm64) jauh lebih cepat daripada semua ABI.
+      # Ganti ke "android-arm,android-arm64,android-x64" kalau butuh semua.
+      TARGET_PLATFORM: android-arm64
     steps:
       - name: Validasi input
         run: |
@@ -72,22 +75,81 @@ jobs:
           if [ -z "$ZIP" ]; then echo "ZIP tidak ditemukan di release $TAG"; exit 1; fi
           unzip -q "$ZIP" -d project
 
+      - name: Auto-perbaiki struktur ZIP
+        run: |
+          # Ekstrak ZIP yang berada di dalam ZIP (maksimal 3 lapis)
+          for i in 1 2 3; do
+            NESTED=$(find project -name "*.zip" | head -20)
+            [ -z "$NESTED" ] && break
+            while IFS= read -r z; do
+              d="${z%.zip}"
+              unzip -q -o "$z" -d "$d" && rm -f "$z"
+            done <<< "$NESTED"
+          done
+          # Hapus folder sampah dari macOS
+          find project -name "__MACOSX" -type d -exec rm -rf {} + 2>/dev/null || true
+
       - name: Locate pubspec
         run: |
           PUBSPEC=$(find project -name pubspec.yaml -not -path "*/build/*" | head -1)
-          if [ -z "$PUBSPEC" ]; then echo "pubspec.yaml tidak ditemukan di dalam ZIP"; exit 1; fi
+          if [ -z "$PUBSPEC" ]; then
+            echo "::error::pubspec.yaml tidak ditemukan. Isi ZIP:"
+            find project -maxdepth 3 | head -60
+            exit 1
+          fi
           echo "PROJ_DIR=$(dirname "$PUBSPEC")" >> "$GITHUB_ENV"
+          echo "Project ditemukan di: $(dirname "$PUBSPEC")"
+
+      - name: Samakan versi Gradle dengan Flutter
+        run: |
+          PROPS=$(find "$PROJ_DIR/android" -path "*/gradle/wrapper/gradle-wrapper.properties" 2>/dev/null | head -1)
+          if [ -z "$PROPS" ]; then echo "gradle-wrapper.properties tidak ada, dilewati"; exit 0; fi
+          CUR=$(grep -oP 'gradle-\K[0-9.]+(?=-(all|bin)\.zip)' "$PROPS" | head -1)
+          echo "Gradle di project: ${CUR:-tidak terbaca}"
+          if [ -n "$CUR" ] && [ "$CUR" != "8.14" ] && \
+             [ "$(printf '%s\n8.14\n' "$CUR" | sort -V | head -1)" = "$CUR" ]; then
+            sed -i -E 's#gradle-[0-9.]+-(all|bin)\.zip#gradle-8.14-all.zip#' "$PROPS"
+            echo "Gradle dinaikkan dari $CUR ke 8.14 (minimum Flutter)"
+          fi
 
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
 
-      - name: Build APK
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Build APK (dengan auto-perbaikan)
         run: |
           cd "$PROJ_DIR"
-          flutter pub get
-          flutter build apk --$BUILD_TYPE
+          FLAG="--$BUILD_TYPE"
+          flutter config --no-analytics >/dev/null 2>&1 || true
+
+          # Percobaan 1: langsung build
+          flutter pub get && flutter build apk $FLAG --target-platform "$TARGET_PLATFORM" && exit 0
+          echo "::warning::Build pertama gagal, mencoba perbaikan otomatis (tahap 1: clean + pub get)"
+
+          # Percobaan 2: bersihkan cache build dan dependency, lalu build ulang
+          flutter clean
+          rm -rf android/.gradle android/app/build 2>/dev/null || true
+          flutter pub get && flutter build apk $FLAG --target-platform "$TARGET_PLATFORM" && exit 0
+          echo "::warning::Tahap 2 gagal, mencoba perbaikan otomatis (tahap 2: upgrade dependency)"
+
+          # Percobaan 3: naikkan dependency yang kompatibel lalu build ulang
+          flutter clean
+          flutter pub upgrade --tighten 2>/dev/null || flutter pub upgrade
+          flutter build apk $FLAG --target-platform "$TARGET_PLATFORM" && exit 0
+
+          echo "::error::Build gagal setelah 3 percobaan. Penyebab ada di kode project (lihat error compiler di atas), bukan lingkungan build."
+          exit 1
 
       - uses: actions/upload-artifact@v4
         with:
