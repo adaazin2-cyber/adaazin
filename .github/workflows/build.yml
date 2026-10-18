@@ -1,0 +1,44 @@
+name: Flutter Build
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'apk / appbundle / web'
+        required: true
+        default: 'apk'
+      fast:
+        description: 'true / false'
+        required: false
+        default: 'false'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+      - run: flutter pub get
+      - name: Build
+        env:
+          TARGET: ${{ inputs.target }}
+          FAST: ${{ inputs.fast }}
+        run: |
+          EXTRA=""
+          if [ "$FAST" = "true" ] && [ "$TARGET" != "web" ]; then EXTRA="--no-shrink"; fi
+          flutter build "$TARGET" --release $EXTRA
+          mkdir -p out
+          case "$TARGET" in
+            web) cp -r build/web out/web ;;
+            apk) cp build/app/outputs/flutter-apk/app-release.apk out/ ;;
+            appbundle) cp build/app/outputs/bundle/release/app-release.aab out/ ;;
+          esac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: out/
