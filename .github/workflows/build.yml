@@ -1,44 +1,104 @@
 name: Flutter Build
+
 on:
   workflow_dispatch:
     inputs:
       target:
-        description: 'apk / appbundle / web'
+        description: 'Target build'
         required: true
-        default: 'apk'
+        default: apk
+        type: choice
+        options:
+          - apk
+          - appbundle
+          - web
       fast:
-        description: 'true / false'
+        description: 'Gunakan build cepat/no-shrink untuk Android'
         required: false
         default: 'false'
+        type: boolean
+
+permissions:
+  contents: read
+
+timeout-minutes: 45
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      TARGET: ${{ inputs.target }}
+      FAST: ${{ inputs.fast }}
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: 'stable'
-          cache: true
-      - run: flutter pub get
-      - name: Build
-        env:
-          TARGET: ${{ inputs.target }}
-          FAST: ${{ inputs.fast }}
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Validate Flutter project
+        shell: bash
         run: |
-          EXTRA=""
-          if [ "$FAST" = "true" ] && [ "$TARGET" != "web" ]; then EXTRA="--no-shrink"; fi
-          flutter build "$TARGET" --release $EXTRA
+          set -euo pipefail
+          test -f pubspec.yaml
+          test -d lib
+          case "$TARGET" in
+            apk|appbundle|web) ;;
+            *) echo "Unsupported target: $TARGET"; exit 1 ;;
+          esac
+
+      - name: Setup Java
+        if: env.TARGET != 'web'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Flutter doctor
+        run: flutter doctor -v
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Analyze Dart source
+        run: flutter analyze --no-fatal-infos
+
+      - name: Build Android
+        if: env.TARGET == 'apk' || env.TARGET == 'appbundle'
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXTRA_ARGS=""
+          if [ "$FAST" = "true" ]; then EXTRA_ARGS="--no-shrink"; fi
+          flutter build "$TARGET" --release $EXTRA_ARGS
+
+      - name: Build Web
+        if: env.TARGET == 'web'
+        run: flutter build web --release
+
+      - name: Collect output
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf out
           mkdir -p out
           case "$TARGET" in
-            web) cp -r build/web out/web ;;
-            apk) cp build/app/outputs/flutter-apk/app-release.apk out/ ;;
-            appbundle) cp build/app/outputs/bundle/release/app-release.aab out/ ;;
+            apk) test -f build/app/outputs/flutter-apk/app-release.apk; cp build/app/outputs/flutter-apk/app-release.apk out/ ;;
+            appbundle) test -f build/app/outputs/bundle/release/app-release.aab; cp build/app/outputs/bundle/release/app-release.aab out/ ;;
+            web) test -d build/web; cp -a build/web out/web ;;
           esac
-      - uses: actions/upload-artifact@v4
+          find out -maxdepth 3 -type f | sort
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: build-output
+          name: flutter-${{ env.TARGET }}-${{ github.run_number }}
           path: out/
+          if-no-files-found: error
+          retention-days: 14
+          
