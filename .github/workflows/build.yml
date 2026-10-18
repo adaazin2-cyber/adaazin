@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: 'Target build'
+        description: 'Pilih target build'
         required: true
         default: apk
         type: choice
@@ -13,9 +13,9 @@ on:
           - appbundle
           - web
       fast:
-        description: 'Gunakan build cepat/no-shrink untuk Android'
+        description: 'Build Android cepat tanpa shrink'
         required: false
-        default: 'false'
+        default: false
         type: boolean
 
 permissions:
@@ -25,13 +25,14 @@ timeout-minutes: 45
 
 jobs:
   build:
+    name: Build ${{ inputs.target }}
     runs-on: ubuntu-latest
     env:
       TARGET: ${{ inputs.target }}
       FAST: ${{ inputs.fast }}
 
     steps:
-      - name: Checkout source
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Validate Flutter project
@@ -42,10 +43,10 @@ jobs:
           test -d lib
           case "$TARGET" in
             apk|appbundle|web) ;;
-            *) echo "Unsupported target: $TARGET"; exit 1 ;;
+            *) echo "Target tidak didukung: $TARGET"; exit 1 ;;
           esac
 
-      - name: Setup Java
+      - name: Setup Java 17
         if: env.TARGET != 'web'
         uses: actions/setup-java@v4
         with:
@@ -53,7 +54,7 @@ jobs:
           java-version: '17'
           cache: gradle
 
-      - name: Setup Flutter
+      - name: Setup Flutter stable
         uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -62,42 +63,57 @@ jobs:
       - name: Flutter doctor
         run: flutter doctor -v
 
-      - name: Resolve dependencies
+      - name: Install dependencies from pubspec.yaml
         run: flutter pub get
 
-      - name: Analyze Dart source
+      - name: Analyze Dart code
         run: flutter analyze --no-fatal-infos
 
-      - name: Build Android
-        if: env.TARGET == 'apk' || env.TARGET == 'appbundle'
+      - name: Build Android APK
+        if: env.TARGET == 'apk'
         shell: bash
         run: |
           set -euo pipefail
           EXTRA_ARGS=""
           if [ "$FAST" = "true" ]; then EXTRA_ARGS="--no-shrink"; fi
-          flutter build "$TARGET" --release $EXTRA_ARGS
+          flutter build apk --release $EXTRA_ARGS
+          test -f build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Build Android App Bundle
+        if: env.TARGET == 'appbundle'
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXTRA_ARGS=""
+          if [ "$FAST" = "true" ]; then EXTRA_ARGS="--no-shrink"; fi
+          flutter build appbundle --release $EXTRA_ARGS
+          test -f build/app/outputs/bundle/release/app-release.aab
 
       - name: Build Web
         if: env.TARGET == 'web'
-        run: flutter build web --release
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter build web --release
+          test -d build/web
 
-      - name: Collect output
+      - name: Collect build output
         shell: bash
         run: |
           set -euo pipefail
           rm -rf out
           mkdir -p out
           case "$TARGET" in
-            apk) test -f build/app/outputs/flutter-apk/app-release.apk; cp build/app/outputs/flutter-apk/app-release.apk out/ ;;
-            appbundle) test -f build/app/outputs/bundle/release/app-release.aab; cp build/app/outputs/bundle/release/app-release.aab out/ ;;
-            web) test -d build/web; cp -a build/web out/web ;;
+            apk) cp build/app/outputs/flutter-apk/app-release.apk out/ ;;
+            appbundle) cp build/app/outputs/bundle/release/app-release.aab out/ ;;
+            web) cp -a build/web out/web ;;
           esac
           find out -maxdepth 3 -type f | sort
 
-      - name: Upload build artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: flutter-${{ env.TARGET }}-${{ github.run_number }}
+          name: flutter-${{ inputs.target }}-${{ github.run_number }}
           path: out/
           if-no-files-found: error
           retention-days: 14
